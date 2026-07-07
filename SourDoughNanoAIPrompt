@@ -1,0 +1,52 @@
+Here is a comprehensive, production-grade AI prompt designed to generate the exact system architecture, state-driven logic, hardware integrations, and race-condition mitigations used in this project.
+AI System Generation Prompt
+Role & Objective:
+You are an expert embedded systems engineer specializing in Arduino microcontrollers (specifically the ATmega328P architectures), hardware state machines, and human-machine interface (HMI) implementations. Write a highly resilient, monolithic, compilation-ready Arduino C++ program to act as an automation controller for an altered commercial bread machine.
+1. Hardware Architecture & Pin Allocation
+HMI Inputs: Four buttons using internal pull-up resistors (INPUT_PULLUP).
+PIN_BTN_MENU (Pin 4): Cycles through configuration menu lines.
+PIN_BTN_UP (Pin 5): Increments parameter selections.
+PIN_BTN_DOWN (Pin 6): Decrements parameter selections.
+PIN_BTN_START_RESET (Pin 7): Multi-functional input. A short press (<500ms) starts the sequence, pauses execution, or unpauses execution. A long press (>=1000ms) forces a soft reboot.
+Servo Control Interfaces: Three digital outputs simulating mechanical button presses on the target bread maker (driven via temporary LOW state shifts acting as active-low open-collector simulators):
+srvMenu (Pin 9): "Menu" switch wire.
+srvMinus (Pin 10): "Minus/Adjustment" switch wire.
+srvRunReset (Pin 11): "Start/Stop" switch wire.
+Display: I2C Adafruit SSD1306 128x64 OLED display utilizing Adafruit_GFX and Wire libraries.
+2. Configuration Parameters & EEPROM Architecture
+Maintain the following indexed arrays representing operational durations:
+kneadOptions[] = {1, 30, 60, 90} (Minutes)
+degasOptions[] = {1, 30, 60, 90, 120, 150, 180} (Minutes)
+proofOptions[] = {0, 1, 3, 6, 9, 12, 15, 18, 21, 24} (Where option index tracking an array value of 0 is a special case equating to exactly 1 minute for diagnostic runtime validation; indices 1 through 24 equate directly to hours).
+bakeOptions[] = {1, 20, 30, 60, 70, 80, 90, 100, 110, 120} (Minutes)
+Implement permanent memory operations via EEPROM.h:
+On boot (setup), load saved selection indices from memory addresses 0 to 3. Validate array boundaries before loading to prevent corruption from blank/unwritten EEPROM hardware.
+When a cooking routine is initialized, commit the user's selected configuration parameters safely to EEPROM flash storage using EEPROM.update().
+3. Execution Control & Chronological State Machine
+Implement a non-blocking asynchronous state machine using tracking structures enum ProcessState { IDLE, KNEADING, DEGAS, PROOF, BAKE, FINISHED };.
+Countdown Engine: Establish an internal countdown timer (remainingMin, remainingSec). To support validation testing, declare a global flag const bool testRun.
+If testRun == true, time compression triggers a ratio where 1 elapsed minute translates to 1 real-time second (1000UL / 60UL).
+If testRun == false, regular clock rates apply (1000UL).
+Pause Protocol: If a pause is requested during active cooking states, freeze the countdown clock and any active processing iterations. Keep track of elapsed time offsets while paused (pauseStartTime) and cleanly add those offsets to stateStartTime and oneSecondClock upon resuming to eliminate temporal drift.
+Universal Anti-Race Condition Floors: Because asynchronous clock updates can cause remainingMin to decrement a fraction of a millisecond early during state machine switch steps (especially under aggressive time compression), build safety checks into every state initialization block. If activeStageRemaining computes to <= 0 or empty at the threshold boundary of a stage initialization, force an analytical fallback floor value derived from that array stage’s modulo structure (e.g., floor to 1 minute, or a max single-loop capacity like 30/60 minutes) to prevent loop calculation skips.
+4. Hardware Simulation Protocols (Bread Machine Interface)
+When a stage transitions and shifts state parameters into action for the first time (!stepInitialized), execute the following active-low pulse protocols through the servo mimic output lines to program the host machine:
+Kneading State Initiation: Send a 2-second longPress to srvRunReset, a loop of 7 shortPress signals to srvMenu, 10 shortPress signals to srvMinus, and a single shortPress to srvRunReset. Loop blocks are processed in sub-divisions capped at 30 minutes.
+Degas State Initiation: Send a 2-second longPress to srvRunReset, 7 shortPress loops to srvMenu, 10 shortPress loops to srvMinus, and 1 shortPress to srvRunReset. Halt script operations for 10 seconds via delay(10000) to complete internal host alignments, and close by firing another 2-second longPress to srvRunReset. Sub-divide cycles into blocks of up to 30 minutes.
+Proof State Initiation: Send a 2-second longPress to srvRunReset strictly at the absolute chronological beginning of the phase (skip on consecutive continuous loop sub-shifts). Sub-divide cycles into chunks capped at 60 minutes.
+Bake State Initiation: Send a 2-second longPress to srvRunReset, 13 shortPress loops to srvMenu, 10 shortPress loops to srvMinus, and 1 shortPress to srvRunReset. Sub-divide execution tracking into chunks capped at 60 minutes.
+Pulse Dynamics: Define a shortPress as a LOW pulse for 200ms followed by a HIGH float for 300ms. Define a longPress as a LOW pulse for 200ms, a HIGH float for 300ms, an active LOW anchor for 2000ms, and a final recovery HIGH float for 1000ms.
+5. User Interface & Display Rendering
+Build an dynamic rendering routine that outputs context-relevant visualization based on the device's state:
+IDLE Mode Visuals: Display the primary string "Sourdough", alongside the aggregate time calculation (totalMin) formatted smoothly as HH:MM. Draw configuration options on lines 2 through 5. Inverse-highlight the currently active line via a full-width background rectangle with contrasting text colors.
+Cooking Mode Visuals: Show "Cooking" (or flash text "PAUSED" at 500ms gaps if stopped). Render the active real-time descending duration countdown as HH:MM:SS. Show an active rotational text spinner animation (/, -, \, |) updating at 250ms intervals.
+Dynamic Labels: Prefix the actively running cooking phase with an asterisk (*). Replace the raw baseline target minutes on the active line with runtime loop tracking metrics representing real-time internal status parameters, displayed as: *StageLabel C:[Cycles Remaining] M:[Minutes Left in Current Cycle Loop]. If option 0 is selected under the Proof category, automatically update the label prefix string to "ProofMin: 1" instead of using the regular hourly descriptor "ProofHr:".
+FINISHED Mode Visuals: Clear display fields entirely and render double-sized text layout displaying "Sourdough\nDone".
+6. Diagnostics & System Telemetry
+Incorporate an intelligent asynchronous serial telemetry engine printing logs over a standard 74880 baud rate connection.
+Implement a central custom logging wrapper (serialLog) utilizing explicit __FlashStringHelper declarations via the F() macro to optimize internal RAM consumption.
+Prepend every telemetry transmission log with an isolated timestamp tracking the system's runtime state as [HH:MM:SS]. If system loops are paused, explicitly insert the text (PAUSED) before transmitting messages.
+Output extensive operational diagnostic details (e.g., active stages initialized, cycle shifts, total min remaining, loop interval lengths) to ensure complete operational trace tracking.
+Tips for running this prompt:
+Feeding this prompt directly into an advanced code-generation AI will yield clean, structurally sound code because it explicitly outlines state machine conditions, debouncing requirements, library dependencies, memory offsets, and asynchronous race conditions beforehand.
+
