@@ -2,7 +2,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Servo.h>
-#include <EEPROM.h> // Included for persistent option storage
+#include <EEPROM.h> 
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -10,7 +10,7 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 // --- GLOBAL FLAGS ---
-const bool testRun = false; // Set to true for time compression (1 min = 1 sec), false for production real-time
+const bool testRun = true; // Set to true for time compression (1 min = 1 sec), false for production real-time
 const int debugLevel = 2;
 
 // --- PIN ASSIGNMENTS ---
@@ -22,23 +22,25 @@ const int PIN_BTN_START_RESET = 7;
 const int srvMenu        = 9;   // Purple Wire on bread machine
 const int srvMinus       = 10;  // Yellow Wire on bread machine
 const int srvRunReset    = 11;  // Orange Wire on bread machine
+const int srvColour      = 12;  // Grey Wire on bread machine
 
 // --- ARRAYS FOR PARAMETER OPTIONS ---
-const int kneadOptions[] = {1, 30, 60, 90};
-const int degasOptions[] = {1, 30, 60, 90, 120, 150, 180};
-const int proofOptions[] = {0, 1, 3, 6, 9, 12, 15, 18, 21, 24}; // 0 = 1 min, others are Hours   
-const int bakeOptions[]  = {1, 20, 30, 60, 70, 80, 90, 100, 110, 120};   
+// -1 = 1 Min Test Interval, 0 = Skip Stage Entirely
+const int kneadOptions[] = {-1, 0, 25, 50, 75};
+const int degasOptions[] = {-1, 0, 25, 50, 75, 100, 125, 150};
+const int proofOptions[] = {-1, 0, 1, 3, 6, 9, 12, 15, 18}; // Positive values represent Hours   
+const int bakeOptions[]  = {-1, 0, 20, 30, 50, 75, 90, 100, 120};   
 
 int kneadOptionsSize = sizeof(kneadOptions) / sizeof(kneadOptions[0]);
 int degasOptionsSize = sizeof(degasOptions) / sizeof(degasOptions[0]);
 int proofOptionsSize = sizeof(proofOptions) / sizeof(proofOptions[0]);
 int bakeOptionsSize = sizeof(bakeOptions)   / sizeof(bakeOptions[0]);
 
-// Default indices (will be overwritten if valid data exists in EEPROM)
-int idxKnead = 1; 
-int idxDegas = 3; 
-int idxProof = 1; // Defaults to 1 Hour
-int idxBake  = 4; 
+// Default indices
+int idxKnead = 2; // Defaults to 25 Min
+int idxDegas = 3; // Defaults to 50 Min
+int idxProof = 2; // Defaults to 1 Hour
+int idxBake  = 4; // Defaults to 50 Min
 
 // EEPROM Memory Map Addresses
 const int EEPROM_ADDR_KNEAD = 0;
@@ -76,7 +78,7 @@ unsigned long runResetPressTime = 0;
 // --- REBOOT POINTER ---
 void (* resetFunc) (void) = 0;
 
-// --- DYNAMIC SERIAL LOGGER ENGINE WITH HH:MM:SS TIMESTAMPS & CYCLE INTERVALS ---
+// --- DYNAMIC SERIAL LOGGER ENGINE WITH HH:MM:SS TIMESTAMPS ---
 void serialLog(const __FlashStringHelper* message, long dataValue = -1, long cyclesVal = -1, long cycleIntervalVal = -1) {
   long hh = remainingMin / 60;
   long mm = remainingMin % 60;
@@ -130,7 +132,6 @@ void setup() {
   int storedProof = EEPROM.read(EEPROM_ADDR_PROOF);
   int storedBake  = EEPROM.read(EEPROM_ADDR_BAKE);
 
-  // Validate bounds before applying to prevent errors on fresh/blank EEPROM hardware
   if (storedKnead < kneadOptionsSize) idxKnead = storedKnead;
   if (storedDegas < degasOptionsSize) idxDegas = storedDegas;
   if (storedProof < proofOptionsSize) idxProof = storedProof;
@@ -148,9 +149,11 @@ void setup() {
   pinMode(PIN_BTN_DOWN, INPUT_PULLUP);
   pinMode(PIN_BTN_START_RESET, INPUT_PULLUP);
 
+  // Default to High-Impedance Inputs on startup
   pinMode(srvMenu, INPUT);
   pinMode(srvMinus, INPUT);
   pinMode(srvRunReset, INPUT);
+  pinMode(srvColour, INPUT);
 
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { 
     for(;;); 
@@ -190,23 +193,23 @@ void longPress(int pin) {
       Serial.println(pin);
     }  
     digitalWrite(pin, LOW);
-    delay(200);
-    digitalWrite(pin, HIGH);
-    delay(300);
-    digitalWrite(pin, LOW);
     delay(2000);
     digitalWrite(pin, HIGH);
     delay(1000);
 }
 
+long getStageMinutes(int optionValue, bool isProof) {
+  if (optionValue == -1) return 1;
+  if (optionValue == 0)  return 0;
+  if (isProof)           return (long)optionValue * 60;
+  return (long)optionValue;
+}
+
 void calculateTotalMin() {
-  long proofMinutes = 0;
-  if (proofOptions[idxProof] == 0) {
-    proofMinutes = 1; // Option 0 means 1 minute for quick validation testing
-  } else {
-    proofMinutes = (long)proofOptions[idxProof] * 60; // Others translated to Hours
-  }
-  totalMin = (long)kneadOptions[idxKnead] + (long)degasOptions[idxDegas] + proofMinutes + (long)bakeOptions[idxBake];
+  totalMin = getStageMinutes(kneadOptions[idxKnead], false) + 
+             getStageMinutes(degasOptions[idxDegas], false) + 
+             getStageMinutes(proofOptions[idxProof], true)  + 
+             getStageMinutes(bakeOptions[idxBake], false);
 }
 
 void processCountdownClock() {
@@ -227,14 +230,7 @@ void processCountdownClock() {
 }
 
 void cycleMenu(bool forward) {
-  for (int i = 0; i < 4; i++) {
-    if (forward) {
-      currentMenuLine = (currentMenuLine + 1) % 4;
-    } else {
-      currentMenuLine = (currentMenuLine - 1 + 4) % 4;
-    }
-    break; 
-  }
+  currentMenuLine = forward ? (currentMenuLine + 1) % 4 : (currentMenuLine - 1 + 4) % 4;
 }
 
 // --- INPUT & ADJUSTMENT REGISTRATION ---
@@ -294,48 +290,49 @@ void handleButtons() {
       if (pressDuration < 500) { 
         if (currentState == IDLE) {
           
-          // --- STORE OPTIONS TO EEPROM WHEN COOKING STARTS ---
           EEPROM.update(EEPROM_ADDR_KNEAD, idxKnead);
           EEPROM.update(EEPROM_ADDR_DEGAS, idxDegas);
           EEPROM.update(EEPROM_ADDR_PROOF, idxProof);
           EEPROM.update(EEPROM_ADDR_BAKE, idxBake);
           
           if (debugLevel >= 1) {
-            Serial.println(F("[EEPROM] Current configuration indexes saved securely to flash storage."));
-            
-            // --- LOG ALL SELECTED COOKING OPTIONS ---
+            Serial.println(F("[EEPROM] Configuration saved securely."));
             Serial.println(F("========================================"));
             Serial.println(F("    COOKING STARTED - ACTIVE PROFILE    "));
             Serial.println(F("========================================"));
-            Serial.print(F(" Knead Time : ")); Serial.print(kneadOptions[idxKnead]); Serial.println(F(" min"));
-            Serial.print(F(" Degas Time : ")); Serial.print(degasOptions[idxDegas]); Serial.println(F(" min"));
-            
-            Serial.print(F(" Proof Time : ")); 
-            if (proofOptions[idxProof] == 0) {
-              Serial.println(F("1 min (Special Selection)"));
-            } else {
-              Serial.print(proofOptions[idxProof]); Serial.println(F(" hours"));
-            }
-            
-            Serial.print(F(" Bake Time  : ")); Serial.print(bakeOptions[idxBake]);  Serial.println(F(" min"));
-            Serial.print(F(" Total Time : ")); Serial.print(totalMin);               Serial.println(F(" min"));
+            Serial.print(F(" Knead Time : ")); Serial.print(getStageMinutes(kneadOptions[idxKnead], false)); Serial.println(F(" min"));
+            Serial.print(F(" Degas Time : ")); Serial.print(getStageMinutes(degasOptions[idxDegas], false)); Serial.println(F(" min"));
+            Serial.print(F(" Proof Time : ")); Serial.print(getStageMinutes(proofOptions[idxProof], true));  Serial.println(F(" min"));
+            Serial.print(F(" Bake Time  : ")); Serial.print(getStageMinutes(bakeOptions[idxBake], false));  Serial.println(F(" min"));
+            Serial.print(F(" Total Time : ")); Serial.print(totalMin);                                      Serial.println(F(" min"));
             Serial.println(F("========================================"));
           }
+
+          // --- INITIALIZE ACTUATOR PINS IMMEDIATELY AT COOKING START ---
+          pinMode(srvMenu, OUTPUT); 
+          pinMode(srvMinus, OUTPUT); 
+          pinMode(srvRunReset, OUTPUT); 
+          pinMode(srvColour, OUTPUT);
+          
+          digitalWrite(srvMenu, HIGH); 
+          digitalWrite(srvMinus, HIGH); 
+          digitalWrite(srvRunReset, HIGH); 
+          digitalWrite(srvColour, HIGH);
+
+          // --- EDITED PER SPECIFICATION: ADDED ACTIONS DIRECTLY AFTER PIN SETS ---
+          shortPress(srvRunReset, 1);
+          longPress(srvRunReset);
 
           remainingMin = totalMin;
           remainingSec = 0;
           oneSecondClock = now;
           currentState = KNEADING;
           
-          cyclesRemaining = (kneadOptions[idxKnead] + 29) / 30;
+          long kMin = getStageMinutes(kneadOptions[idxKnead], false);
+          cyclesRemaining = (kMin == 1) ? 1 : (kMin + 24) / 25; 
           stepInitialized = false;
           currentMenuLine = 0; 
           isPaused = false;
-          if (debugLevel >= 1) {
-            Serial.println();
-            Serial.println();
-            serialLog(F("Cooking started Total Min:"), totalMin);
-          }
         } else if (currentState == FINISHED) {
           currentState = IDLE;
           calculateTotalMin();
@@ -375,7 +372,6 @@ void printFormatTime(long totalMinutes, int totalSeconds, bool displaySeconds) {
   }
 }
 
-// --- DISPLAY GRAPHICS ENGINE ---
 void updateDisplay() {
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
@@ -393,11 +389,7 @@ void updateDisplay() {
       display.setCursor(80, 0); 
       printFormatTime(totalMin, 0, false);
     } else {
-      if (isPaused && ((millis() / 500) % 2 == 0)) {
-        display.print(F("PAUSED"));
-      } else {
-        display.print(F("Cooking"));
-      }
+      display.print(isPaused && ((millis() / 500) % 2 == 0) ? F("PAUSED") : F("Cooking"));
       display.setCursor(70, 0); 
       printFormatTime(remainingMin, remainingSec, true);
     }
@@ -405,27 +397,18 @@ void updateDisplay() {
 
   if (currentState != IDLE && currentState != FINISHED) {
     const char spinIcons[] = {'/', '-', '\\', '|'};
-    int iconIndex = (millis() / 250) % 4;
     display.setCursor(118, 0);
-    display.print(spinIcons[iconIndex]);
+    display.print(spinIcons[(millis() / 250) % 4]);
   }
 
-  renderMenuRow(12, F("KneadMin: "), kneadOptions[idxKnead], (currentState == KNEADING), 0);
-  renderMenuRow(24, F("DegasMin: "), degasOptions[idxDegas], (currentState == DEGAS), 1);
-  
-  // Dynamic switch text header depending on proof testing selection styles
-  if (proofOptions[idxProof] == 0) {
-    renderMenuRow(36, F("ProofMin: "), 1, (currentState == PROOF), 2);
-  } else {
-    renderMenuRow(36, F("ProofHr:  "), proofOptions[idxProof], (currentState == PROOF), 2);
-  }
-  
-  renderMenuRow(48, F("BakeMin:  "), bakeOptions[idxBake], (currentState == BAKE), 3);
+  renderMenuRow(12, F("KneadMin: "), kneadOptions[idxKnead], (currentState == KNEADING), 0, false);
+  renderMenuRow(24, F("DegasMin: "), degasOptions[idxDegas], (currentState == DEGAS), 1, false);
+  renderMenuRow(36, F("ProofHr:  "), proofOptions[idxProof], (currentState == PROOF), 2, true);
+  renderMenuRow(48, F("BakeMin:  "), bakeOptions[idxBake], (currentState == BAKE), 3, false);
 
   display.display();
 }
 
-// --- PROCESSING SEQUENCE CONTROL ENGINE ---
 void runSourdoughEngine() {
   if (currentState == IDLE || currentState == FINISHED) return;
   
@@ -449,35 +432,35 @@ void runSourdoughEngine() {
 
   switch (currentState) {
     case KNEADING:
+      if (kneadOptions[idxKnead] == 0) {
+        if (debugLevel >= 1) serialLog(F("Kneading bypassed (Set to 0)"));
+        currentState = DEGAS;
+        long dMin = getStageMinutes(degasOptions[idxDegas], false);
+        cyclesRemaining = (dMin == 1) ? 1 : (dMin + 24) / 25; 
+        stepInitialized = false;
+        break;
+      }
+
       if (!stepInitialized) {
-        long totalProofMinutes = (proofOptions[idxProof] == 0) ? 1 : ((long)proofOptions[idxProof] * 60);
-        activeStageRemaining = remainingMin - ((long)degasOptions[idxDegas] + totalProofMinutes + (long)bakeOptions[idxBake]);
+        long dMin = getStageMinutes(degasOptions[idxDegas], false);
+        long pMin = getStageMinutes(proofOptions[idxProof], true);
+        long bMin = getStageMinutes(bakeOptions[idxBake], false);
+        activeStageRemaining = remainingMin - (dMin + pMin + bMin);
         
-        // Anti-race condition protection floor code
         if (activeStageRemaining <= 0) {
-          activeStageRemaining = (kneadOptions[idxKnead] % 30 == 0) ? 30 : (kneadOptions[idxKnead] % 30);
+          long targetKnead = getStageMinutes(kneadOptions[idxKnead], false);
+          activeStageRemaining = (targetKnead == 1) ? 1 : ((targetKnead % 25 == 0) ? 25 : (targetKnead % 25));
         }
-        if (activeStageRemaining > 30) {
-          activeStageRemaining = 30;
-        }
+        if (activeStageRemaining > 25) activeStageRemaining = 25;
 
-        if (debugLevel >= 1) {
-          serialLog(F("Kneading loop cycle initialized"), kneadOptions[idxKnead], cyclesRemaining, activeStageRemaining);
-        }
+        if (debugLevel >= 1) serialLog(F("Kneading block initialized"), -1, cyclesRemaining, activeStageRemaining);
         
-        pinMode(srvMenu, OUTPUT);
-        pinMode(srvMinus, OUTPUT);
-        pinMode(srvRunReset, OUTPUT);
-        digitalWrite(srvMenu, HIGH);
-        digitalWrite(srvMinus, HIGH);        
-        digitalWrite(srvRunReset, HIGH);
-
         updateDisplay();
-        longPress(srvRunReset);
+        // --- REMOVED REDUNDANT INITIAL LONGPRESS PER INSTRUCTION ---
         shortPress(srvMenu, 7);
         shortPress(srvMinus, 10);
         shortPress(srvRunReset, 1); 
-        
+          
         stateStartTime = currentMillis;
         stepInterval = testRun ? ((unsigned long)activeStageRemaining * 1000UL) : ((unsigned long)activeStageRemaining * 60UL * 1000UL); 
         stepInitialized = true;
@@ -487,43 +470,49 @@ void runSourdoughEngine() {
         longPress(srvRunReset);
         cyclesRemaining--;
         
-        long totalProofMinutes = (proofOptions[idxProof] == 0) ? 1 : ((long)proofOptions[idxProof] * 60);
-        activeStageRemaining = remainingMin - ((long)degasOptions[idxDegas] + totalProofMinutes + (long)bakeOptions[idxBake]);
+        long dMin = getStageMinutes(degasOptions[idxDegas], false);
+        long pMin = getStageMinutes(proofOptions[idxProof], true);
+        long bMin = getStageMinutes(bakeOptions[idxBake], false);
+        activeStageRemaining = remainingMin - (dMin + pMin + bMin);
+
         if (cyclesRemaining > 0 && activeStageRemaining > 0) {
           stepInitialized = false;
-          if (debugLevel >= 1) {
-            serialLog(F("Kneading loop cycle continuous shift"), -1, cyclesRemaining, (activeStageRemaining > 30 ? 30 : activeStageRemaining));
-          }
         } else {
           currentState = DEGAS;
-          cyclesRemaining = (degasOptions[idxDegas] + 29) / 30;
+          long dMinNext = getStageMinutes(degasOptions[idxDegas], false);
+          cyclesRemaining = (dMinNext == 1) ? 1 : (dMinNext + 24) / 25; 
           stepInitialized = false;
         }
       }
       break;
 
     case DEGAS:
-      if (!stepInitialized) {
-        long totalProofMinutes = (proofOptions[idxProof] == 0) ? 1 : ((long)proofOptions[idxProof] * 60);
-        activeStageRemaining = remainingMin - (totalProofMinutes + (long)bakeOptions[idxBake]);
-        
-        // Anti-race condition protection floor code
-        if (activeStageRemaining <= 0) {
-          activeStageRemaining = (degasOptions[idxDegas] % 30 == 0) ? 30 : (degasOptions[idxDegas] % 30);
-        }
-        if (activeStageRemaining > 30) {
-          activeStageRemaining = 30;
-        }
+      if (degasOptions[idxDegas] == 0) {
+        if (debugLevel >= 1) serialLog(F("Degas bypassed (Set to 0)"));
+        currentState = PROOF;
+        long pMin = getStageMinutes(proofOptions[idxProof], true);
+        cyclesRemaining = (pMin == 1) ? 1 : (pMin + 59) / 60;
+        stepInitialized = false;
+        break;
+      }
 
-        if (debugLevel >= 1) {
-          serialLog(F("Degas loop cycle initialized"), degasOptions[idxDegas], cyclesRemaining, activeStageRemaining);
+      if (!stepInitialized) {
+        long pMin = getStageMinutes(proofOptions[idxProof], true);
+        long bMin = getStageMinutes(bakeOptions[idxBake], false);
+        activeStageRemaining = remainingMin - (pMin + bMin);
+        
+        if (activeStageRemaining <= 0) {
+          long targetDegas = getStageMinutes(degasOptions[idxDegas], false);
+          activeStageRemaining = (targetDegas == 1) ? 1 : ((targetDegas % 25 == 0) ? 25 : (targetDegas % 25));
         }
+        if (activeStageRemaining > 25) activeStageRemaining = 25;
+
+        if (debugLevel >= 1) serialLog(F("Degas block initialized"), -1, cyclesRemaining, activeStageRemaining);
         
         updateDisplay();
-        longPress(srvRunReset); 
+        // --- REMOVED REDUNDANT INITIAL LONGPRESS PER INSTRUCTION ---
         shortPress(srvMenu, 7);
         shortPress(srvMinus, 10);
-        
         shortPress(srvRunReset, 1); 
         delay(10000); 
         longPress(srvRunReset);
@@ -535,54 +524,46 @@ void runSourdoughEngine() {
       
       if (millis() - stateStartTime >= stepInterval) {
         cyclesRemaining--;
-        
-        long totalProofMinutes = (proofOptions[idxProof] == 0) ? 1 : ((long)proofOptions[idxProof] * 60);
-        activeStageRemaining = remainingMin - (totalProofMinutes + (long)bakeOptions[idxBake]);
+        long pMin = getStageMinutes(proofOptions[idxProof], true);
+        long bMin = getStageMinutes(bakeOptions[idxBake], false);
+        activeStageRemaining = remainingMin - (pMin + bMin);
+
         if (cyclesRemaining > 0 && activeStageRemaining > 0) {
           stepInitialized = false;
-          if (debugLevel >= 1) {
-            serialLog(F("Degas loop cycle continuous shift"), -1, cyclesRemaining, (activeStageRemaining > 30 ? 30 : activeStageRemaining));
-          }
         } else {
           currentState = PROOF;
-          if (proofOptions[idxProof] == 0) {
-            cyclesRemaining = 1;
-          } else {
-            cyclesRemaining = (((long)proofOptions[idxProof] * 60) + 59) / 60;
-          }
+          long pMinNext = getStageMinutes(proofOptions[idxProof], true);
+          cyclesRemaining = (pMinNext == 1) ? 1 : (pMinNext + 59) / 60;
           stepInitialized = false;
         }
       }
       break;
 
     case PROOF:
-      if (!stepInitialized) {
-        activeStageRemaining = remainingMin - (long)bakeOptions[idxBake];
-        
-        // Anti-race condition protection floor code
-        if (activeStageRemaining <= 0) {
-          if (proofOptions[idxProof] == 0) {
-            activeStageRemaining = 1;
-          } else {
-            long totalProofMinutes = (long)proofOptions[idxProof] * 60;
-            activeStageRemaining = (totalProofMinutes % 60 == 0) ? 60 : (totalProofMinutes % 60);
-          }
-        }
-        if (activeStageRemaining > 60) {
-          activeStageRemaining = 60;
-        }
+      if (proofOptions[idxProof] == 0) {
+        if (debugLevel >= 1) serialLog(F("Proof bypassed (Set to 0)"));
+        currentState = BAKE;
+        long bMin = getStageMinutes(bakeOptions[idxBake], false);
+        cyclesRemaining = (bMin == 1) ? 1 : (bMin + 49) / 50; 
+        stepInitialized = false;
+        break;
+      }
 
-        if (debugLevel >= 1) {
-          long displayLabelValue = (proofOptions[idxProof] == 0) ? 1 : ((long)proofOptions[idxProof] * 60);
-          serialLog(F("Proof loop cycle initialized"), displayLabelValue, cyclesRemaining, activeStageRemaining);
+      if (!stepInitialized) {
+        long bMin = getStageMinutes(bakeOptions[idxBake], false);
+        activeStageRemaining = remainingMin - bMin;
+        
+        if (activeStageRemaining <= 0) {
+          long targetProof = getStageMinutes(proofOptions[idxProof], true);
+          activeStageRemaining = (targetProof == 1) ? 1 : ((targetProof % 60 == 0) ? 60 : (targetProof % 60));
         }
+        if (activeStageRemaining > 60) activeStageRemaining = 60;
+
+        if (debugLevel >= 1) serialLog(F("Proof block initialized"), -1, cyclesRemaining, activeStageRemaining);
         
         updateDisplay();
-        long totalProofMinutes = (proofOptions[idxProof] == 0) ? 1 : ((long)proofOptions[idxProof] * 60);
-        long proofTimeElapsed = totalProofMinutes - activeStageRemaining;
-        if (proofTimeElapsed == 0) {
-          longPress(srvRunReset);
-        }
+        long totalProofMinutes = getStageMinutes(proofOptions[idxProof], true);
+        // --- REMOVED REDUNDANT INITIAL LONGPRESS CONDITIONS PER INSTRUCTION ---
         
         stateStartTime = currentMillis;
         stepInterval = testRun ? ((unsigned long)activeStageRemaining * 1000UL) : ((unsigned long)activeStageRemaining * 60UL * 1000UL);
@@ -591,41 +572,43 @@ void runSourdoughEngine() {
       
       if (currentMillis - stateStartTime >= stepInterval) {
         cyclesRemaining--;
-        
-        activeStageRemaining = remainingMin - (long)bakeOptions[idxBake];
+        long bMin = getStageMinutes(bakeOptions[idxBake], false);
+        activeStageRemaining = remainingMin - bMin;
+
         if (cyclesRemaining > 0 && activeStageRemaining > 0) {
           stepInitialized = false;
-          if (debugLevel >= 1) {
-            serialLog(F("Proof loop cycle continuous shift"), -1, cyclesRemaining, (activeStageRemaining > 60 ? 60 : activeStageRemaining));
-          }
         } else {
           currentState = BAKE;
-          cyclesRemaining = (bakeOptions[idxBake] + 59) / 60; 
+          long bMinNext = getStageMinutes(bakeOptions[idxBake], false);
+          cyclesRemaining = (bMinNext == 1) ? 1 : (bMinNext + 49) / 50; 
           stepInitialized = false;
         }
       }
       break;
 
     case BAKE:
+      if (bakeOptions[idxBake] == 0) {
+        if (debugLevel >= 1) serialLog(F("Bake bypassed (Set to 0). Cooking Complete."));
+        currentState = FINISHED;
+        stepInitialized = false;
+        break;
+      }
+
       if (!stepInitialized) {
         long currentBakeInterval = remainingMin;
         
-        // Anti-race condition protection floor code
-        if (currentBakeInterval <= 0) {
-          currentBakeInterval = 1;
-        }
-        if (currentBakeInterval > 60) {
-          currentBakeInterval = 60;
-        }
+        if (currentBakeInterval <= 0) currentBakeInterval = 1;
+        if (currentBakeInterval > 50) currentBakeInterval = 50; 
         
-        if (debugLevel >= 1) {
-          serialLog(F("Bake loop cycle initialized"), bakeOptions[idxBake], cyclesRemaining, currentBakeInterval);
-        }
+        if (debugLevel >= 1) serialLog(F("Bake block initialized"), -1, cyclesRemaining, currentBakeInterval);
         
         updateDisplay();
-        longPress(srvRunReset); 
+        // --- REMOVED REDUNDANT INITIAL LONGPRESS PER INSTRUCTION ---
         shortPress(srvMenu, 13);
+        
+        shortPress(srvColour, 1); 
         shortPress(srvMinus, 10);
+        
         shortPress(srvRunReset, 1); 
         
         stateStartTime = currentMillis;
@@ -639,26 +622,20 @@ void runSourdoughEngine() {
         
         if (cyclesRemaining > 0 && remainingMin > 0) {
           stepInitialized = false;
-          if (debugLevel >= 1) {
-            serialLog(F("Bake loop cycle continuous shift"), -1, cyclesRemaining, (remainingMin > 60 ? 60 : remainingMin));
-          }
         } else {
           currentState = FINISHED;
           stepInitialized = false;
           if (debugLevel >= 1) {
-            serialLog(F("Cooking finished completely! Freezing screen layout..."));
+            serialLog(F("--> ALL COOKING STAGES COMPLETE! <--"));
           }
           updateDisplay(); 
         }
       }
       break;
-
-    default:
-      break;
   }
 }
 
-void renderMenuRow(int yPos, const __FlashStringHelper* textLabel, int numericValue, bool isActiveStage, int targetRowID) {
+void renderMenuRow(int yPos, const __FlashStringHelper* textLabel, int numericValue, bool isActiveStage, int targetRowID, bool isProof) {
   display.setCursor(0, yPos);
   
   if (currentState == IDLE) {
@@ -669,59 +646,38 @@ void renderMenuRow(int yPos, const __FlashStringHelper* textLabel, int numericVa
       display.setTextColor(SSD1306_WHITE);
     }
     display.print(textLabel);
-    display.print(numericValue);
+    if (numericValue == -1) display.print(F("1m(Test)"));
+    else if (numericValue == 0) display.print(F("SKIP"));
+    else display.print(numericValue);
   } else {
     display.setTextColor(SSD1306_WHITE);
-    
     if (isActiveStage) {
       long dynamicCycleMin = 0;
-      
-      if (currentState == KNEADING || currentState == DEGAS || currentState == PROOF) {
-        long standardBlockSize = (currentState == PROOF) ? 60 : 30;
-        
-        if (currentState == PROOF && proofOptions[idxProof] == 0) {
-          standardBlockSize = 1;
-        }
-        
-        long staticBlocksMin = (long)(cyclesRemaining - 1) * standardBlockSize;
-        long remainingModOffset = remainingMin % standardBlockSize;
-        
-        if (remainingModOffset == 0 && remainingMin > 0) {
-          remainingModOffset = standardBlockSize;
-          if (staticBlocksMin >= standardBlockSize) {
-             staticBlocksMin -= standardBlockSize;
-          }
-        }
-        
-        dynamicCycleMin = staticBlocksMin + remainingModOffset;
-        
-        if (remainingSec > 0 && (remainingMin % standardBlockSize != 0)) {
-          dynamicCycleMin++;
-        }
-        
-        long maxCeiling = 0;
-        if (currentState == KNEADING) maxCeiling = kneadOptions[idxKnead];
-        if (currentState == DEGAS)    maxCeiling = degasOptions[idxDegas];
-        if (currentState == PROOF)    maxCeiling = (proofOptions[idxProof] == 0) ? 1 : ((long)proofOptions[idxProof] * 60);
-        if (dynamicCycleMin > maxCeiling) dynamicCycleMin = maxCeiling;
-        
-      } else if (currentState == BAKE) {
+      if (currentState == BAKE) {
         dynamicCycleMin = remainingMin;
         if (remainingSec > 0) dynamicCycleMin++;
+      } else {
+        long targetVal = isProof ? proofOptions[idxProof] : (currentState == KNEADING ? kneadOptions[idxKnead] : degasOptions[idxDegas]);
+        if (targetVal == -1) {
+          dynamicCycleMin = 1;
+        } else {
+          long standardBlockSize = isProof ? 60 : 25; 
+          long staticBlocksMin = (long)(cyclesRemaining - 1) * standardBlockSize;
+          long remainingModOffset = remainingMin % standardBlockSize;
+          if (remainingModOffset == 0 && remainingMin > 0) {
+            remainingModOffset = standardBlockSize;
+            if (staticBlocksMin >= standardBlockSize) staticBlocksMin -= standardBlockSize;
+          }
+          dynamicCycleMin = staticBlocksMin + remainingModOffset;
+          if (remainingSec > 0 && (remainingMin % standardBlockSize != 0)) dynamicCycleMin++;
+        }
       }
-      
-      if (dynamicCycleMin < 0) dynamicCycleMin = 0;
-
-      display.print(F("*"));
-      display.print(textLabel);
-      display.print(F("C:"));
-      display.print(cyclesRemaining);
-      display.print(F(" M:"));
-      display.print((int)dynamicCycleMin);
+      display.print(F("*")); display.print(textLabel); display.print(F("C:")); display.print(cyclesRemaining); display.print(F(" M:")); display.print((int)dynamicCycleMin);
     } else {
-      display.print(F(" "));
-      display.print(textLabel);
-      display.print(numericValue);
+      display.print(F(" ")); display.print(textLabel);
+      if (numericValue == -1) display.print(F("1m"));
+      else if (numericValue == 0) display.print(F("SKIP"));
+      else display.print(numericValue);
     }
   }
 }
