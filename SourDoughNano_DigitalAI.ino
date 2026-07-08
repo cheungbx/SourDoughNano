@@ -10,7 +10,7 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 // --- GLOBAL FLAGS ---
-const bool testRun = true; // Set to true for time compression (1 min = 1 sec), false for production real-time
+const bool testRun = false; // Set to true for time compression (1 min = 1 sec), false for production real-time
 const int debugLevel = 2;
 
 // --- PIN ASSIGNMENTS ---
@@ -319,9 +319,7 @@ void handleButtons() {
           digitalWrite(srvRunReset, HIGH); 
           digitalWrite(srvColour, HIGH);
 
-          // --- EDITED PER SPECIFICATION: ADDED ACTIONS DIRECTLY AFTER PIN SETS ---
-          shortPress(srvRunReset, 1);
-          longPress(srvRunReset);
+          // --- EDITED PER SPECIFICATION: ACTIONS REMOVED FROM HERE ---
 
           remainingMin = totalMin;
           remainingSec = 0;
@@ -456,7 +454,11 @@ void runSourdoughEngine() {
         if (debugLevel >= 1) serialLog(F("Kneading block initialized"), -1, cyclesRemaining, activeStageRemaining);
         
         updateDisplay();
-        // --- REMOVED REDUNDANT INITIAL LONGPRESS PER INSTRUCTION ---
+        
+        // --- ADDED SHORTPRESS DIRECTLY BEFORE LONGPRESS ---
+        shortPress(srvRunReset, 1);
+        longPress(srvRunReset);
+        
         shortPress(srvMenu, 7);
         shortPress(srvMinus, 10);
         shortPress(srvRunReset, 1); 
@@ -510,7 +512,11 @@ void runSourdoughEngine() {
         if (debugLevel >= 1) serialLog(F("Degas block initialized"), -1, cyclesRemaining, activeStageRemaining);
         
         updateDisplay();
-        // --- REMOVED REDUNDANT INITIAL LONGPRESS PER INSTRUCTION ---
+        
+        // --- ADDED SHORTPRESS DIRECTLY BEFORE LONGPRESS ---
+        shortPress(srvRunReset, 1);
+        longPress(srvRunReset);
+         
         shortPress(srvMenu, 7);
         shortPress(srvMinus, 10);
         shortPress(srvRunReset, 1); 
@@ -562,8 +568,8 @@ void runSourdoughEngine() {
         if (debugLevel >= 1) serialLog(F("Proof block initialized"), -1, cyclesRemaining, activeStageRemaining);
         
         updateDisplay();
-        long totalProofMinutes = getStageMinutes(proofOptions[idxProof], true);
-        // --- REMOVED REDUNDANT INITIAL LONGPRESS CONDITIONS PER INSTRUCTION ---
+        
+        // --- REMOVED LONGPRESS CONDITION FROM HERE PER SPECIFICATION ---
         
         stateStartTime = currentMillis;
         stepInterval = testRun ? ((unsigned long)activeStageRemaining * 1000UL) : ((unsigned long)activeStageRemaining * 60UL * 1000UL);
@@ -603,7 +609,8 @@ void runSourdoughEngine() {
         if (debugLevel >= 1) serialLog(F("Bake block initialized"), -1, cyclesRemaining, currentBakeInterval);
         
         updateDisplay();
-        // --- REMOVED REDUNDANT INITIAL LONGPRESS PER INSTRUCTION ---
+        
+        // --- REMOVED THE FIRST LONGPRESS FROM HERE PER SPECIFICATION ---
         shortPress(srvMenu, 13);
         
         shortPress(srvColour, 1); 
