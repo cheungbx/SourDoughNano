@@ -36,7 +36,7 @@ DonLim DL-T065-K Bread Machine
 
 --------------------------------
 
-Solder a 10-pin femal header on the circuit board for the following buttons , GND and 5V.
+Solder a 8-pin femal header on the circuit board for the following buttons , GND and 5V.
 
 Pin Header 
 
